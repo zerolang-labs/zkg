@@ -1,9 +1,6 @@
-fn ensure_work_dir() -> Void {
-    if !std.fs.exists(".zero") {
-        std.fs.makeDir(".zero")
-    }
-    if !std.fs.exists(".zero/zkg") {
-        std.fs.makeDir(".zero/zkg")
+fn ensure_dir(path: String) -> Void {
+    if !std.fs.exists(path) {
+        std.fs.makeDir(path)
     }
 }
 
@@ -11,173 +8,210 @@ fn write_chunk(file: mutref<File>, text: String) -> Void raises {
     check std.fs.writeAllOrRaise(file, std.mem.span(text))
 }
 
-fn write_add_script(url: String) -> Void raises {
-    ensure_work_dir()
+fn write_http_body(path: String, response: Span<u8>, result: HttpResult) -> Void raises {
     let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/zkg/add.sh")
-    check write_chunk(&mut file, "#!/bin/sh\n")
-    check write_chunk(&mut file, "set -eu\n")
-    check write_chunk(&mut file, "if [ -n \"${ZKG_HOME:-}\" ]; then home=\"$ZKG_HOME\"; else home=\"$HOME/.zkg\"; fi\n")
-    check write_chunk(&mut file, "mkdir -p \"$home/bin\" \"$home/cache/github\" \"$home/packages\" \"$home/tmp\"\n")
-    check write_chunk(&mut file, "url='")
-    check write_chunk(&mut file, url)
-    check write_chunk(&mut file, "'\n")
-    check write_chunk(&mut file, "repo_path=${url#https://github.com/}\n")
-    check write_chunk(&mut file, "owner=${repo_path%%/*}\n")
-    check write_chunk(&mut file, "repo=${repo_path#*/}\n")
-    check write_chunk(&mut file, "repo=${repo%.git}\n")
-    check write_chunk(&mut file, "module_owner=$(printf '%s' \"$owner\" | tr '.-' '__')\n")
-    check write_chunk(&mut file, "module_repo=$(printf '%s' \"$repo\" | tr '.-' '__')\n")
-    check write_chunk(&mut file, "case \"$module_owner\" in [0123456789]*) module_owner=\"_$module_owner\" ;; esac\n")
-    check write_chunk(&mut file, "case \"$module_repo\" in [0123456789]*) module_repo=\"_$module_repo\" ;; esac\n")
-    check write_chunk(&mut file, "cache=$home/cache/github/$owner/$repo\n")
-    check write_chunk(&mut file, "module=src/zkg/$module_owner/$module_repo\n")
-    check write_chunk(&mut file, "rm -rf \"$cache\" \"$module\"\n")
-    check write_chunk(&mut file, "mkdir -p \"$(dirname \"$cache\")\" \"$(dirname \"$module\")\"\n")
-    check write_chunk(&mut file, "git clone --depth 1 \"$url\" \"$cache\"\n")
-    check write_chunk(&mut file, "mkdir -p \"$module\"\n")
-    check write_chunk(&mut file, "if [ -d \"$cache/src\" ]; then cp -R \"$cache/src/.\" \"$module/\"; else find \"$cache\" -maxdepth 1 -type f -name '*.0' -exec cp {} \"$module/\" \\;; fi\n")
-    check write_chunk(&mut file, "if [ -d \"$cache/include\" ]; then mkdir -p include; cp -R \"$cache/include/.\" include/; fi\n")
-    check write_chunk(&mut file, "if [ ! -f \"$module/mod.0\" ]; then if [ -f \"$module/lib.0\" ]; then mv \"$module/lib.0\" \"$module/mod.0\"; elif [ -f \"$module/main.0\" ]; then mv \"$module/main.0\" \"$module/mod.0\"; else printf 'pub fn zkg_package_marker() -> i32 {\\n    return 1\\n}\\n' > \"$module/mod.0\"; fi; fi\n")
-    check write_chunk(&mut file, "mkdir -p .zero \"$home/packages/$owner\"\n")
-    check write_chunk(&mut file, "printf '{\"url\":\"%s\",\"module\":\"zkg.%s.%s\",\"cache\":\"%s\"}\\n' \"$url\" \"$module_owner\" \"$module_repo\" \"$cache\" > .zero/zkg.lock.json\n")
-    check write_chunk(&mut file, "printf '{\"url\":\"%s\",\"module\":\"zkg.%s.%s\",\"cache\":\"%s\"}\\n' \"$url\" \"$module_owner\" \"$module_repo\" \"$cache\" > \"$home/packages/$owner/$repo.json\"\n")
+    var file: owned<File> = check std.fs.createOrRaise(fs, path)
+    var byte: [1]u8 = [0]
+    let offset: usize = std.http.responseBodyOffset(response)
+    let len: usize = std.http.resultBodyLen(result)
+    var index: usize = 0
+    while index < len {
+        byte[0] = response[offset + index]
+        check std.fs.writeAllOrRaise(&mut file, byte)
+        index = index + 1
+    }
     std.fs.close(&mut file)
 }
 
-fn write_install_script() -> Void raises {
-    ensure_work_dir()
-    let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/zkg/install.sh")
-    check write_chunk(&mut file, "#!/bin/sh\n")
-    check write_chunk(&mut file, "set -eu\n")
-    check write_chunk(&mut file, "if [ -n \"${ZKG_HOME:-}\" ]; then home=\"$ZKG_HOME\"; else home=\"$HOME/.zkg\"; fi\n")
-    check write_chunk(&mut file, "mkdir -p \"$home/bin\" \"$home/cache/github\" \"$home/packages\" \"$home/tmp\"\n")
-    check write_chunk(&mut file, "if command -v zero >/dev/null 2>&1; then zero_bin=$(command -v zero); elif [ -x \"$HOME/.zero/bin/zero\" ]; then zero_bin=\"$HOME/.zero/bin/zero\"; else echo 'zkg: zero is required for zkg install' >&2; exit 1; fi\n")
-    check write_chunk(&mut file, "test -f zero.json && test -d src || { echo 'zkg: run zkg install from the zkg source directory' >&2; exit 1; }\n")
-    check write_chunk(&mut file, "\"$zero_bin\" check .\n")
-    check write_chunk(&mut file, "cp ./zkg \"$home/bin/zkg\"\n")
-    check write_chunk(&mut file, "chmod 755 \"$home/bin/zkg\"\n")
-    check write_chunk(&mut file, "cp zero.json \"$home/zero.json\"\n")
-    check write_chunk(&mut file, "rm -rf \"$home/src\"\n")
-    check write_chunk(&mut file, "cp -R src \"$home/src\"\n")
-    check write_chunk(&mut file, "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git config --get remote.origin.url > \"$home/source-url\" 2>/dev/null || true; git rev-parse HEAD > \"$home/version\" 2>/dev/null || true; fi\n")
-    std.fs.close(&mut file)
+fn fetch_to_file(client: HttpClient, url: String, path: String) -> Bool raises {
+    var response: [131072]u8 = [0; 131072]
+    let result: HttpResult = std.http.fetch(client, url, response, std.time.seconds(30))
+    if !std.http.resultOk(result) {
+        return false
+    }
+    if std.http.resultStatus(result) != 200 {
+        return false
+    }
+    check write_http_body(path, response, result)
+    return true
 }
 
-fn write_update_script() -> Void raises {
-    ensure_work_dir()
-    let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/zkg/update.sh")
-    check write_chunk(&mut file, "#!/bin/sh\n")
-    check write_chunk(&mut file, "set -eu\n")
-    check write_chunk(&mut file, "if [ -n \"${ZKG_HOME:-}\" ]; then home=\"$ZKG_HOME\"; else home=\"$HOME/.zkg\"; fi\n")
-    check write_chunk(&mut file, "mkdir -p \"$home/bin\" \"$home/cache/github\" \"$home/packages\" \"$home/tmp\"\n")
-    check write_chunk(&mut file, "if command -v zero >/dev/null 2>&1; then zero_bin=$(command -v zero); elif [ -x \"$HOME/.zero/bin/zero\" ]; then zero_bin=\"$HOME/.zero/bin/zero\"; else echo 'zkg: zero is required for zkg update' >&2; exit 1; fi\n")
-    check write_chunk(&mut file, "if [ -f zero.json ] && [ -d src ] && [ -f zkg ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git pull --ff-only; ./zkg install; exit 0; fi\n")
-    check write_chunk(&mut file, "source_url=${ZKG_UPDATE_URL:-}\n")
-    check write_chunk(&mut file, "if [ -z \"$source_url\" ] && [ -f \"$home/source-url\" ]; then source_url=$(cat \"$home/source-url\"); fi\n")
-    check write_chunk(&mut file, "if [ -z \"$source_url\" ]; then source_url=https://github.com/zerolang-labs/zkg.git; fi\n")
-    check write_chunk(&mut file, "source_dir=\"$home/tmp/zkg-source\"\n")
-    check write_chunk(&mut file, "if [ -d \"$source_dir/.git\" ]; then git -C \"$source_dir\" fetch --tags origin; git -C \"$source_dir\" pull --ff-only origin main; else rm -rf \"$source_dir\"; git clone --depth 1 \"$source_url\" \"$source_dir\"; fi\n")
-    check write_chunk(&mut file, "\"$zero_bin\" check \"$source_dir\"\n")
-    check write_chunk(&mut file, "(cd \"$source_dir\" && ZKG_HOME=\"$home\" ./zkg install)\n")
-    check write_chunk(&mut file, "git -C \"$source_dir\" rev-parse HEAD > \"$home/version\" 2>/dev/null || true\n")
-    std.fs.close(&mut file)
+fn fetch_raw_to_file(client: HttpClient, owner: String, repo: String, source_path: String, target_path: String) -> Bool raises {
+    var url_a: [512]u8 = [0; 512]
+    var url_b: [512]u8 = [0; 512]
+    var url_c: [512]u8 = [0; 512]
+    let a: Maybe<String> = std.path.join(url_a, "https://raw.githubusercontent.com", owner)
+    if !a.has {
+        return false
+    }
+    let b: Maybe<String> = std.path.join(url_b, a.value, repo)
+    if !b.has {
+        return false
+    }
+    let c: Maybe<String> = std.path.join(url_c, b.value, source_path)
+    if !c.has {
+        return false
+    }
+    return check fetch_to_file(client, c.value, target_path)
 }
 
-fn write_remove_script(namespace: String) -> Void raises {
-    ensure_work_dir()
+fn write_package_record(owner: String, repo: String) -> Void raises {
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/packages")
+    var owner_dir_buf: [256]u8 = [0; 256]
+    var metadata_buf: [256]u8 = [0; 256]
+    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, ".zkg/packages", owner)
+    if !owner_dir.has {
+        return
+    }
+    ensure_dir(owner_dir.value)
+    let metadata_path: Maybe<String> = std.path.join(metadata_buf, owner_dir.value, repo)
+    if !metadata_path.has {
+        return
+    }
     let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/zkg/remove.sh")
-    check write_chunk(&mut file, "#!/bin/sh\n")
-    check write_chunk(&mut file, "set -eu\n")
-    check write_chunk(&mut file, "if [ -n \"${ZKG_HOME:-}\" ]; then home=\"$ZKG_HOME\"; else home=\"$HOME/.zkg\"; fi\n")
-    check write_chunk(&mut file, "mkdir -p \"$home/bin\" \"$home/cache/github\" \"$home/packages\" \"$home/tmp\"\n")
-    check write_chunk(&mut file, "namespace='")
-    check write_chunk(&mut file, namespace)
-    check write_chunk(&mut file, "'\n")
-    check write_chunk(&mut file, "namespace=$(printf '%s' \"$namespace\" | tr '-' '_')\n")
-    check write_chunk(&mut file, "case \"$namespace\" in zkg.*) echo 'zkg: remove namespaces are relative to src/zkg; use user.repo, not zkg.user.repo' >&2; exit 1 ;; esac\n")
-    check write_chunk(&mut file, "case \"$namespace\" in ''|.*|*.|*..*|*/*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.]*) echo 'zkg: expected namespace like user.repo' >&2; exit 1 ;; esac\n")
-    check write_chunk(&mut file, "case \"$namespace\" in *.*) ;; *) echo 'zkg: expected namespace like user.repo' >&2; exit 1 ;; esac\n")
-    check write_chunk(&mut file, "module_name=\"zkg.$namespace\"\n")
-    check write_chunk(&mut file, "module_path=\"src/zkg/$(printf '%s' \"$namespace\" | tr '.' '/')\"\n")
-    check write_chunk(&mut file, "removed=0\n")
-    check write_chunk(&mut file, "if [ -d \"$module_path\" ]; then rm -rf \"$module_path\"; removed=1; parent=$(dirname \"$module_path\"); rmdir \"$parent\" 2>/dev/null || true; rmdir src/zkg 2>/dev/null || true; fi\n")
-    check write_chunk(&mut file, "if [ -f .zero/zkg.lock.json ] && grep -q \"\\\"module\\\":\\\"$module_name\\\"\" .zero/zkg.lock.json; then rm -f .zero/zkg.lock.json; removed=1; fi\n")
-    check write_chunk(&mut file, "for metadata in \"$home\"/packages/*/*.json; do [ -f \"$metadata\" ] || continue; if grep -q \"\\\"module\\\":\\\"$module_name\\\"\" \"$metadata\"; then cache=$(sed -n 's/.*\"cache\":\"\\([^\"]*\\)\".*/\\1/p' \"$metadata\"); case \"$cache\" in \"$home\"/cache/*) ;; *) cache= ;; esac; if [ -n \"$cache\" ]; then rm -rf \"$cache\"; fi; rm -f \"$metadata\"; removed=1; fi; done\n")
-    check write_chunk(&mut file, "if [ \"$removed\" -eq 0 ]; then echo \"zkg: namespace not installed: $namespace\" >&2; exit 1; fi\n")
-    check write_chunk(&mut file, "printf 'zkg: removed %s\\n' \"$namespace\"\n")
-    std.fs.close(&mut file)
-}
-
-fn write_uninstall_script(command_name: String) -> Void raises {
-    ensure_work_dir()
-    let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/zkg/uninstall.sh")
-    check write_chunk(&mut file, "#!/bin/sh\n")
-    check write_chunk(&mut file, "set -eu\n")
-    check write_chunk(&mut file, "if [ -n \"${ZKG_HOME:-}\" ]; then home=\"$ZKG_HOME\"; else home=\"$HOME/.zkg\"; fi\n")
-    check write_chunk(&mut file, "mkdir -p \"$home/bin\" \"$home/cache/github\" \"$home/packages\" \"$home/tmp\"\n")
-    check write_chunk(&mut file, "command_name='")
-    check write_chunk(&mut file, command_name)
-    check write_chunk(&mut file, "'\n")
-    check write_chunk(&mut file, "case \"$command_name\" in ''|*/*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) echo 'zkg: expected command name like zkg' >&2; exit 1 ;; esac\n")
-    check write_chunk(&mut file, "command_path=\"$home/bin/$command_name\"\n")
-    check write_chunk(&mut file, "if [ ! -e \"$command_path\" ]; then echo \"zkg: command not installed: $command_name\" >&2; exit 1; fi\n")
-    check write_chunk(&mut file, "rm -f \"$command_path\"\n")
-    check write_chunk(&mut file, "if [ \"$command_name\" = zkg ]; then rm -rf \"$home/src\"; rm -f \"$home/zero.json\" \"$home/source-url\" \"$home/version\"; fi\n")
-    check write_chunk(&mut file, "printf 'zkg: uninstalled %s\\n' \"$command_name\"\n")
+    var file: owned<File> = check std.fs.createOrRaise(fs, metadata_path.value)
+    check write_chunk(&mut file, "{\"module\":\"zkg.")
+    check write_chunk(&mut file, owner)
+    check write_chunk(&mut file, ".")
+    check write_chunk(&mut file, repo)
+    check write_chunk(&mut file, "\"}\n")
     std.fs.close(&mut file)
 }
 
 pub fn add(world: World, url: String) -> Void raises {
-    check write_add_script(url)
-    let status: ProcStatus = std.proc.spawn("sh .zero/zkg/add.sh")
-    if std.proc.exitCode(status) == 0 {
-        check world.out.write("zkg: installed ")
-        check world.out.write(url)
-        check world.out.write("\n")
+    let owner_base: String = std.path.dirname(url)
+    let owner: String = std.path.basename(owner_base)
+    let repo: String = std.path.basename(url)
+
+    ensure_dir("src")
+    ensure_dir("src/zkg")
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/cache")
+
+    var owner_dir_buf: [256]u8 = [0; 256]
+    var module_dir_buf: [256]u8 = [0; 256]
+    var mod_path_buf: [256]u8 = [0; 256]
+    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", owner)
+    if !owner_dir.has {
+        check world.err.write("zkg: owner path too long\n")
         return
     }
-    check world.err.write("zkg: install failed\n")
+    ensure_dir(owner_dir.value)
+    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, repo)
+    if !module_dir.has {
+        check world.err.write("zkg: module path too long\n")
+        return
+    }
+    ensure_dir(module_dir.value)
+    let mod_path: Maybe<String> = std.path.join(mod_path_buf, module_dir.value, "mod.0")
+    if !mod_path.has {
+        check world.err.write("zkg: module entry path too long\n")
+        return
+    }
+
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    var installed: Bool = false
+    if !installed {
+        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/mod.0", mod_path.value)
+    }
+    if !installed {
+        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/lib.0", mod_path.value)
+    }
+    if !installed {
+        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/main.0", mod_path.value)
+    }
+    if !installed {
+        check world.err.write("zkg: no src/mod.0, src/lib.0, or src/main.0 found over std.http\n")
+        return
+    }
+
+    check write_package_record(owner, repo)
+    check world.out.write("zkg: installed ")
+    check world.out.write(url)
+    check world.out.write(" as zkg.")
+    check world.out.write(owner)
+    check world.out.write(".")
+    check world.out.write(repo)
+    check world.out.write("\n")
 }
 
 pub fn install(world: World) -> Void raises {
-    check write_install_script()
-    let status: ProcStatus = std.proc.spawn("sh .zero/zkg/install.sh")
-    if std.proc.exitCode(status) == 0 {
-        check world.out.write("zkg: installed to ~/.zkg/bin/zkg\n")
-        return
-    }
-    check world.err.write("zkg: global install failed\n")
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/bin")
+    ensure_dir(".zkg/packages")
+    ensure_dir(".zkg/cache")
+    check world.out.write("zkg: prepared .zkg using std.fs\n")
 }
 
 pub fn update(world: World) -> Void raises {
-    check write_update_script()
-    let status: ProcStatus = std.proc.spawn("sh .zero/zkg/update.sh")
-    if std.proc.exitCode(status) == 0 {
-        check world.out.write("zkg: updated ~/.zkg/bin/zkg\n")
-        return
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    var target: [256]u8 = [0; 256]
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/cache")
+    let path: Maybe<String> = std.path.join(target, ".zkg/cache", "zkg.README.md")
+    if path.has {
+        let fetched: Bool = check fetch_to_file(client, "https://raw.githubusercontent.com/zerolang-labs/zkg/refs/heads/main/README.md", path.value)
+        if fetched {
+            check world.out.write("zkg: fetched latest metadata with std.http\n")
+            return
+        }
     }
-    check world.err.write("zkg: update failed\n")
+    check world.err.write("zkg: update fetch failed\n")
 }
 
-pub fn uninstall(world: World, namespace: String) -> Void raises {
-    check write_uninstall_script(namespace)
-    let status: ProcStatus = std.proc.spawn("sh .zero/zkg/uninstall.sh")
-    if std.proc.exitCode(status) == 0 {
-        return
+pub fn uninstall(world: World, command_name: String) -> Void raises {
+    var command_path_buf: [256]u8 = [0; 256]
+    let command_path: Maybe<String> = std.path.join(command_path_buf, ".zkg/bin", command_name)
+    if command_path.has && std.fs.exists(command_path.value) {
+        if std.fs.remove(command_path.value) {
+            check world.out.write("zkg: uninstalled ")
+            check world.out.write(command_name)
+            check world.out.write("\n")
+            return
+        }
     }
-    check world.err.write("zkg: uninstall failed\n")
+    check world.err.write("zkg: command not installed\n")
 }
 
 pub fn remove(world: World, namespace: String) -> Void raises {
-    check write_remove_script(namespace)
-    let status: ProcStatus = std.proc.spawn("sh .zero/zkg/remove.sh")
-    if std.proc.exitCode(status) == 0 {
+    var owner_dir_buf: [256]u8 = [0; 256]
+    var module_dir_buf: [256]u8 = [0; 256]
+    var mod_path_buf: [256]u8 = [0; 256]
+    let namespace_len: usize = std.mem.len(namespace)
+    var dot: usize = 0
+    while dot < namespace_len && namespace[dot] != 46 {
+        dot = dot + 1
+    }
+    if dot == 0 || dot >= namespace_len - 1 {
+        check world.err.write("zkg: expected namespace like user.repo\n")
         return
     }
-    check world.err.write("zkg: remove failed\n")
+    let owner: String = namespace[0..dot]
+    let repo: String = namespace[dot + 1..namespace_len]
+    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", owner)
+    if !owner_dir.has {
+        check world.err.write("zkg: expected namespace like user.repo\n")
+        return
+    }
+    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, repo)
+    if !module_dir.has {
+        check world.err.write("zkg: expected namespace like user.repo\n")
+        return
+    }
+    let mod_path: Maybe<String> = std.path.join(mod_path_buf, module_dir.value, "mod.0")
+    if mod_path.has {
+        if std.fs.exists(mod_path.value) {
+            std.fs.remove(mod_path.value)
+        }
+    }
+    if std.fs.removeDir(module_dir.value) {
+        check world.out.write("zkg: removed ")
+        check world.out.write(namespace)
+        check world.out.write("\n")
+        return
+    }
+    check world.err.write("zkg: namespace not installed\n")
 }
