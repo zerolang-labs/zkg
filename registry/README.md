@@ -2,15 +2,15 @@
 
 This directory is the first-class package registry for `zkg`.
 
-The registry is only a name server. It maps a Zero namespace alias to a URL
+The registry is only a name server. It maps a Zero package name to a URL
 endpoint and does not store package source code.
 
 ## Entry Format
 
-Each package entry is a plain text file named after the namespace:
+Each package entry is a plain text file named after the package:
 
 ```text
-registry/<owner>.<package>
+registry/<package-name>
 ```
 
 The file content is exactly one URL endpoint:
@@ -23,10 +23,10 @@ https://github.com/<owner>/<repo>
 
 ## Namespace Rules
 
-Namespaces must:
+Package names must:
 
-- be lowercase Zero module identifiers separated by `.`
-- contain at least two segments, such as `user.repo`
+- match endpoint `zero.json` `package.name`
+- be a lowercase Zero module identifier
 - use only `a-z`, `0-9`, and `_`
 - not conflict with an existing file in this directory or row in `index.tsv`
 
@@ -34,17 +34,18 @@ Namespaces must:
 
 Open a pull request that adds:
 
-- `registry/<namespace>` containing exactly one GitHub repository URL
+- `registry/<package-name>` containing exactly one GitHub repository URL
 - one sorted row in `registry/index.tsv`
 
-This follows the js.org-style contribution model: the requested namespace is
+This follows the js.org-style contribution model: the requested package name is
 reviewed as code, and the registry is updated only by merging the pull request.
 
 The registry PR workflow validates:
 
 - ownership or write/maintain/admin permission for the endpoint repository
 - requester rate limits
-- namespace conflicts
+- package name conflicts
 - `registry/index.tsv` consistency
+- endpoint `zero.json` `package.name` matches `registry/<package-name>`
 - endpoint Zero code with `zero check`
 - that registry entries remain URL endpoints only, not package contents

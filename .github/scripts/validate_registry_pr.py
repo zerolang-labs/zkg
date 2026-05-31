@@ -14,11 +14,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "registry"
-NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
+NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 GITHUB_URL_RE = re.compile(
     r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
 )
-INDEX_HEADER = "namespace\turl\towner"
+INDEX_HEADER = "name\turl\towner"
 ALLOWED_REGISTRY_FILES = {"README.md", "index.tsv"}
 WRITE_PERMISSIONS = {"admin", "maintain", "write"}
 ZERO_ENTRYPOINTS = ("src/mod.0", "src/lib.0", "src/main.0")
@@ -26,7 +26,7 @@ ZERO_ENTRYPOINTS = ("src/mod.0", "src/lib.0", "src/main.0")
 
 @dataclass(frozen=True)
 class Entry:
-    namespace: str
+    name: str
     url: str
     owner: str
     repo: str
@@ -89,22 +89,22 @@ def read_registry_entries():
         if rel.name.startswith("."):
             errors.append(f"hidden registry files are not allowed: registry/{rel_text}")
             continue
-        namespace = rel.name
-        if not NAMESPACE_RE.match(namespace):
-            errors.append(f"invalid registry namespace filename: registry/{namespace}")
+        name = rel.name
+        if not NAMESPACE_RE.match(name):
+            errors.append(f"invalid registry package name filename: registry/{name}")
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         if len(lines) != 1 or not lines[0].strip():
-            errors.append(f"registry/{namespace} must contain exactly one URL line")
+            errors.append(f"registry/{name} must contain exactly one URL line")
             continue
         url, owner, repo = normalize_url(lines[0])
         if not url:
-            errors.append(f"registry/{namespace} must point to https://github.com/<owner>/<repo>")
+            errors.append(f"registry/{name} must point to https://github.com/<owner>/<repo>")
             continue
         if lines[0].strip() != url:
-            errors.append(f"registry/{namespace} must use normalized endpoint URL {url}")
+            errors.append(f"registry/{name} must use normalized endpoint URL {url}")
             continue
-        entries[namespace] = Entry(namespace, url, owner, repo, path)
+        entries[name] = Entry(name, url, owner, repo, path)
     return entries, errors
 
 
@@ -125,15 +125,15 @@ def read_index():
     for line_no, line in enumerate(lines[1:], start=2):
         parts = line.split("\t")
         if len(parts) != 3:
-            errors.append(f"registry/index.tsv:{line_no} must have namespace, url, and owner columns")
+            errors.append(f"registry/index.tsv:{line_no} must have name, url, and owner columns")
             continue
-        namespace, url, owner = parts
-        if namespace in rows:
-            errors.append(f"duplicate registry/index.tsv row for {namespace}")
-        if previous and namespace <= previous:
-            errors.append("registry/index.tsv rows must be sorted by namespace")
-        previous = namespace
-        rows[namespace] = (url, owner)
+        name, url, owner = parts
+        if name in rows:
+            errors.append(f"duplicate registry/index.tsv row for {name}")
+        if previous and name <= previous:
+            errors.append("registry/index.tsv rows must be sorted by package name")
+        previous = name
+        rows[name] = (url, owner)
     return rows, errors
 
 
@@ -141,17 +141,17 @@ def validate_index(entries, rows):
     errors = []
     entry_names = set(entries)
     row_names = set(rows)
-    for namespace in sorted(entry_names - row_names):
-        errors.append(f"registry/index.tsv is missing row for {namespace}")
-    for namespace in sorted(row_names - entry_names):
-        errors.append(f"registry/index.tsv has row without registry/{namespace}")
-    for namespace in sorted(entry_names & row_names):
-        entry = entries[namespace]
-        row_url, row_owner = rows[namespace]
+    for name in sorted(entry_names - row_names):
+        errors.append(f"registry/index.tsv is missing row for {name}")
+    for name in sorted(row_names - entry_names):
+        errors.append(f"registry/index.tsv has row without registry/{name}")
+    for name in sorted(entry_names & row_names):
+        entry = entries[name]
+        row_url, row_owner = rows[name]
         if row_url != entry.url:
-            errors.append(f"registry/index.tsv URL for {namespace} must be {entry.url}")
+            errors.append(f"registry/index.tsv URL for {name} must be {entry.url}")
         if row_owner != entry.owner:
-            errors.append(f"registry/index.tsv owner for {namespace} must be {entry.owner}")
+            errors.append(f"registry/index.tsv owner for {name} must be {entry.owner}")
     return errors
 
 
@@ -250,17 +250,36 @@ def validate_ownership(entry, actor, token):
 
 def find_zero_check_input(package_dir):
     manifest = package_dir / "zero.json"
-    if manifest.exists():
-        return "."
+    if not manifest.exists():
+        return ""
     for rel in ZERO_ENTRYPOINTS:
         if (package_dir / rel).exists():
-            return rel
+            return "."
     return ""
+
+
+def read_zero_package_name(package_dir):
+    manifest = package_dir / "zero.json"
+    if not manifest.exists():
+        return "", ["endpoint must contain zero.json"]
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return "", [f"endpoint zero.json could not be parsed: {exc}"]
+    package = data.get("package", {})
+    if not isinstance(package, dict):
+        return "", ["endpoint zero.json must contain a package object"]
+    name = package.get("name", "")
+    if not isinstance(name, str) or not name:
+        return "", ["endpoint zero.json must contain package.name"]
+    if not NAMESPACE_RE.match(name):
+        return "", ["endpoint zero.json package.name must be a lowercase Zero identifier"]
+    return name, []
 
 
 def validate_zero_package(entry):
     with tempfile.TemporaryDirectory(prefix="zkg-registry-") as tmp:
-        checkout = Path(tmp) / entry.namespace
+        checkout = Path(tmp) / entry.name
         clone = subprocess.run(
             ["git", "clone", "--depth", "1", entry.url, str(checkout)],
             cwd=ROOT,
@@ -268,12 +287,20 @@ def validate_zero_package(entry):
             capture_output=True,
         )
         if clone.returncode != 0:
-            return [f"could not clone endpoint for {entry.namespace}: {clone.stderr.strip()}"]
+            return [f"could not clone endpoint for {entry.name}: {clone.stderr.strip()}"]
+
+        package_name, errors = read_zero_package_name(checkout)
+        if errors:
+            return errors
+        if package_name != entry.name:
+            return [
+                f"registry/{entry.name} must match endpoint zero.json package.name `{package_name}`"
+            ]
 
         check_input = find_zero_check_input(checkout)
         if not check_input:
             expected = ", ".join(ZERO_ENTRYPOINTS)
-            return [f"{entry.namespace} endpoint must contain zero.json or one of: {expected}"]
+            return [f"{entry.name} endpoint must contain a zkg entrypoint: {expected}"]
 
         checked = subprocess.run(
             ["zero", "check", check_input],
@@ -286,7 +313,7 @@ def validate_zero_package(entry):
         details = (checked.stdout + checked.stderr).strip()
         if len(details) > 4000:
             details = details[:4000] + "\n..."
-        return [f"zero check failed for {entry.namespace} ({check_input}):\n{details}"]
+        return [f"zero check failed for {entry.name} ({check_input}):\n{details}"]
 
 
 def main():
@@ -316,10 +343,10 @@ def main():
 
     if not errors and not local_only:
         errors.extend(validate_rate_limit(repo, actor, token))
-        for namespace in sorted(changed_names):
-            entry = entries.get(namespace)
+        for package_name in sorted(changed_names):
+            entry = entries.get(package_name)
             if entry is None:
-                errors.append(f"changed registry entry is missing after validation: {namespace}")
+                errors.append(f"changed registry entry is missing after validation: {package_name}")
                 continue
             errors.extend(validate_ownership(entry, actor, token))
             if not errors:

@@ -36,69 +36,70 @@ zkg search
 zkg search wgpu
 ```
 
-Install from a registry alias instead of a full HTTP URL:
+Install from a registry package name instead of a full HTTP URL:
 
 ```sh
-zkg add ihasq.wgpu_zero
-zkg install ihasq.wgpu_zero
+zkg add wgpu
+zkg install wgpu
 ```
 
 This creates an importable module tree under `src/zkg/`:
 
 ```zero
-use zkg.user.repo
+use zkg.wgpu
 ```
 
-Registry aliases are resolved from this repository's `registry/` directory on
-GitHub. The registry is a name server only: it maps aliases to URL endpoints and
-does not store package source code.
+Registry package names are resolved from this repository's `registry/`
+directory on GitHub. The registry is a name server only: it maps package names
+to URL endpoints and does not store package source code.
 
-Repository owner, package names, and aliases should already be valid Zero module
-identifiers for the standard-module implementation.
+Package names come from endpoint `zero.json` `package.name` and must be valid
+Zero module identifiers for the standard-module implementation.
 
 If the upstream repository has `src/mod.0`, that remains the module entry point.
 If it only has `src/lib.0` or `src/main.0`, `zkg` moves that file to `mod.0` so
-the `use zkg.user.repo` form resolves.
+the `use zkg.<package>` form resolves.
 
 The standard-module implementation fetches package source over `std.http`
 instead of invoking `git`.
 
 ## Registry
 
-`./registry` is the zkg equivalent of the crates.io namespace layer. It is
+`./registry` is the zkg equivalent of the crates.io package-name layer. It is
 intentionally small:
 
 ```text
 registry/
   index.tsv          search index used by zkg search
-  <namespace>        one URL endpoint per alias
+  <package-name>     one URL endpoint per package name
 ```
 
-For example, `registry/ihasq.wgpu_zero` contains:
+A registration for `wgpu` would add `registry/wgpu` containing:
 
 ```text
 https://github.com/ihasq/wgpu-zero
 ```
 
-Volunteers register new aliases by opening a pull request, following the
+Volunteers register new package names by opening a pull request, following the
 js.org-style contribution model. A registration PR adds only
-`registry/<namespace>` and the matching sorted `registry/index.tsv` row. The
+`registry/<package-name>` and the matching sorted `registry/index.tsv` row. The
 GitHub Actions registry PR workflow validates:
 
 - requester rate limits
-- namespace conflicts
+- package name conflicts
 - repository ownership or write/maintain/admin permission
+- endpoint `zero.json` `package.name` matches `registry/<package-name>`
 - endpoint Zero code with `zero check`
 
 Merged PRs are the only way registry metadata changes.
 
 ## Remove A Package
 
-`zkg remove` removes a vendored package namespace from the current project.
-The namespace is relative to `src/zkg`, so omit the `zkg.` import prefix:
+`zkg remove` removes a vendored package from the current project. The package
+name is relative to `src/zkg`, so omit the `zkg.` import prefix:
 
 ```sh
-zkg remove user.repo
+zkg remove wgpu
 ```
 
 Removal deletes the vendored module entry under `src/zkg/` using `std.fs`.

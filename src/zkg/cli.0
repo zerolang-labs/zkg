@@ -7,10 +7,10 @@ fn usage(world: World) -> Void raises {
     check world.err.write("       zkg update\n")
     check world.err.write("       zkg search [query]\n")
     check world.err.write("       zkg add https://github.com/user/repo\n")
-    check world.err.write("       zkg add <alias>\n")
-    check world.err.write("       zkg install <alias>\n")
+    check world.err.write("       zkg add <package>\n")
+    check world.err.write("       zkg install <package>\n")
     check world.err.write("       zkg uninstall <command>\n")
-    check world.err.write("       zkg remove <namespace>\n")
+    check world.err.write("       zkg remove <package>\n")
 }
 
 pub fn run(world: World) -> Void raises {
@@ -60,12 +60,12 @@ pub fn run(world: World) -> Void raises {
         return
     }
     if std.mem.eql(command.value, "remove") {
-        let namespace: Maybe<String> = std.args.get(2)
-        if !namespace.has {
+        let package_name: Maybe<String> = std.args.get(2)
+        if !package_name.has {
             check usage(world)
             return
         }
-        check remove(world, namespace.value)
+        check remove(world, package_name.value)
         return
     }
     check usage(world)

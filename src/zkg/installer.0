@@ -72,46 +72,142 @@ fn first_line(buf: Span<u8>, len: usize) -> String {
     return buf[0..end]
 }
 
-fn write_package_record(owner: String, repo: String) -> Void raises {
+fn marker_at(buf: Span<u8>, len: usize, index: usize, marker: String) -> Bool {
+    let marker_len: usize = std.mem.len(marker)
+    if index + marker_len > len {
+        return false
+    }
+    return std.mem.eql(buf[index..index + marker_len], marker)
+}
+
+fn find_marker(buf: Span<u8>, len: usize, marker: String, from: usize) -> usize {
+    let marker_len: usize = std.mem.len(marker)
+    if marker_len == 0 {
+        return len
+    }
+    var index: usize = from
+    while index + marker_len <= len {
+        if marker_at(buf, len, index, marker) {
+            return index
+        }
+        index = index + 1
+    }
+    return len
+}
+
+fn is_space(byte: u8) -> Bool {
+    return byte == 32 || byte == 9 || byte == 10 || byte == 13
+}
+
+fn valid_package_name(name: String) -> Bool {
+    let len: usize = std.mem.len(name)
+    if len == 0 {
+        return false
+    }
+    let first: u8 = name[0]
+    if first < 97 || first > 122 {
+        return false
+    }
+    var index: usize = 1
+    while index < len {
+        let byte: u8 = name[index]
+        let lower: Bool = byte >= 97 && byte <= 122
+        let digit: Bool = byte >= 48 && byte <= 57
+        if !lower && !digit && byte != 95 {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+fn package_name_from_zero_json(buf: Span<u8>, len: usize) -> String {
+    let package_pos: usize = find_marker(buf, len, "\"package\"", 0)
+    if package_pos >= len {
+        return ""
+    }
+    let name_pos: usize = find_marker(buf, len, "\"name\"", package_pos)
+    if name_pos >= len {
+        return ""
+    }
+    var colon: usize = name_pos + std.mem.len("\"name\"")
+    while colon < len && buf[colon] != 58 {
+        colon = colon + 1
+    }
+    if colon >= len {
+        return ""
+    }
+    var start: usize = colon + 1
+    while start < len && is_space(buf[start]) {
+        start = start + 1
+    }
+    if start >= len || buf[start] != 34 {
+        return ""
+    }
+    start = start + 1
+    var end: usize = start
+    while end < len && buf[end] != 34 {
+        end = end + 1
+    }
+    if end >= len {
+        return ""
+    }
+    return buf[start..end]
+}
+
+fn write_package_record(package_name: String) -> Void raises {
     ensure_dir(".zkg")
     ensure_dir(".zkg/packages")
-    var owner_dir_buf: [256]u8 = [0; 256]
     var metadata_buf: [256]u8 = [0; 256]
-    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, ".zkg/packages", owner)
-    if !owner_dir.has {
-        return
-    }
-    ensure_dir(owner_dir.value)
-    let metadata_path: Maybe<String> = std.path.join(metadata_buf, owner_dir.value, repo)
+    let metadata_path: Maybe<String> = std.path.join(metadata_buf, ".zkg/packages", package_name)
     if !metadata_path.has {
         return
     }
     let fs: Fs = std.fs.host()
     var file: owned<File> = check std.fs.createOrRaise(fs, metadata_path.value)
     check write_chunk(&mut file, "{\"module\":\"zkg.")
-    check write_chunk(&mut file, owner)
-    check write_chunk(&mut file, ".")
-    check write_chunk(&mut file, repo)
+    check write_chunk(&mut file, package_name)
     check write_chunk(&mut file, "\"}\n")
     std.fs.close(&mut file)
 }
 
-fn add_url_as(world: World, url: String, source_owner: String, source_repo: String, module_owner: String, module_repo: String) -> Void raises {
+fn add_url_as(world: World, url: String, source_owner: String, source_repo: String, expected_package: String) -> Void raises {
     ensure_dir("src")
     ensure_dir("src/zkg")
     ensure_dir(".zkg")
     ensure_dir(".zkg/cache")
 
-    var owner_dir_buf: [256]u8 = [0; 256]
     var module_dir_buf: [256]u8 = [0; 256]
     var mod_path_buf: [256]u8 = [0; 256]
-    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", module_owner)
-    if !owner_dir.has {
-        check world.err.write("zkg: owner path too long\n")
+    var manifest_path_buf: [256]u8 = [0; 256]
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    let manifest_path: Maybe<String> = std.path.join(manifest_path_buf, ".zkg/cache", "package.zero.json")
+    if !manifest_path.has {
+        check world.err.write("zkg: manifest path too long\n")
         return
     }
-    ensure_dir(owner_dir.value)
-    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, module_repo)
+    let manifest_fetched: Bool = check fetch_raw_to_file(client, source_owner, source_repo, "refs/heads/main/zero.json", manifest_path.value)
+    if !manifest_fetched {
+        check world.err.write("zkg: endpoint zero.json not found\n")
+        return
+    }
+    var manifest_bytes: [16384]u8 = [0; 16384]
+    let manifest_read: Maybe<usize> = std.fs.readBytes(manifest_path.value, manifest_bytes)
+    if !manifest_read.has {
+        check world.err.write("zkg: endpoint zero.json could not be read\n")
+        return
+    }
+    let package_name: String = package_name_from_zero_json(manifest_bytes, manifest_read.value)
+    if !valid_package_name(package_name) {
+        check world.err.write("zkg: zero.json package.name must be a lowercase Zero identifier\n")
+        return
+    }
+    if std.mem.len(expected_package) > 0 && !std.mem.eql(package_name, expected_package) {
+        check world.err.write("zkg: registry package name does not match zero.json package.name\n")
+        return
+    }
+    let module_dir: Maybe<String> = std.path.join(module_dir_buf, "src/zkg", package_name)
     if !module_dir.has {
         check world.err.write("zkg: module path too long\n")
         return
@@ -123,8 +219,6 @@ fn add_url_as(world: World, url: String, source_owner: String, source_repo: Stri
         return
     }
 
-    let net: Net = std.net.host()
-    let client: HttpClient = std.http.client(net)
     var installed: Bool = false
     if !installed {
         installed = check fetch_raw_to_file(client, source_owner, source_repo, "refs/heads/main/src/mod.0", mod_path.value)
@@ -140,13 +234,11 @@ fn add_url_as(world: World, url: String, source_owner: String, source_repo: Stri
         return
     }
 
-    check write_package_record(module_owner, module_repo)
+    check write_package_record(package_name)
     check world.out.write("zkg: installed ")
     check world.out.write(url)
     check world.out.write(" as zkg.")
-    check world.out.write(module_owner)
-    check world.out.write(".")
-    check world.out.write(module_repo)
+    check world.out.write(package_name)
     check world.out.write("\n")
 }
 
@@ -154,50 +246,43 @@ fn add_url(world: World, url: String) -> Void raises {
     let owner_base: String = std.path.dirname(url)
     let owner: String = std.path.basename(owner_base)
     let repo: String = std.path.basename(url)
-    check add_url_as(world, url, owner, repo, owner, repo)
+    check add_url_as(world, url, owner, repo, "")
 }
 
-fn add_alias(world: World, registry_name: String) -> Void raises {
+fn add_package(world: World, package_name: String) -> Void raises {
+    if !valid_package_name(package_name) {
+        check world.err.write("zkg: expected package name like wgpu\n")
+        return
+    }
     let net: Net = std.net.host()
     let client: HttpClient = std.http.client(net)
     ensure_dir(".zkg")
     ensure_dir(".zkg/cache")
     ensure_dir(".zkg/cache/registry")
-    var alias_path_buf: [256]u8 = [0; 256]
-    let alias_path: Maybe<String> = std.path.join(alias_path_buf, ".zkg/cache/registry", registry_name)
-    if !alias_path.has {
-        check world.err.write("zkg: alias path too long\n")
+    var package_path_buf: [256]u8 = [0; 256]
+    let package_path: Maybe<String> = std.path.join(package_path_buf, ".zkg/cache/registry", package_name)
+    if !package_path.has {
+        check world.err.write("zkg: package cache path too long\n")
         return
     }
-    let fetched: Bool = check fetch_registry_to_file(client, registry_name, alias_path.value)
+    let fetched: Bool = check fetch_registry_to_file(client, package_name, package_path.value)
     if !fetched {
-        check world.err.write("zkg: registry alias not found: ")
-        check world.err.write(registry_name)
+        check world.err.write("zkg: registry package not found: ")
+        check world.err.write(package_name)
         check world.err.write("\n")
         return
     }
     var url_bytes: [512]u8 = [0; 512]
-    let read: Maybe<usize> = std.fs.readBytes(alias_path.value, url_bytes)
+    let read: Maybe<usize> = std.fs.readBytes(package_path.value, url_bytes)
     if !read.has {
-        check world.err.write("zkg: registry alias could not be read\n")
+        check world.err.write("zkg: registry package could not be read\n")
         return
     }
     let url: String = first_line(url_bytes, read.value)
     let source_owner_base: String = std.path.dirname(url)
     let source_owner: String = std.path.basename(source_owner_base)
     let source_repo: String = std.path.basename(url)
-    let registry_len: usize = std.mem.len(registry_name)
-    var dot: usize = 0
-    while dot < registry_len && registry_name[dot] != 46 {
-        dot = dot + 1
-    }
-    if dot == 0 || dot >= registry_len - 1 {
-        check world.err.write("zkg: expected registry alias like user.repo\n")
-        return
-    }
-    let module_owner: String = registry_name[0..dot]
-    let module_repo: String = registry_name[dot + 1..registry_len]
-    check add_url_as(world, url, source_owner, source_repo, module_owner, module_repo)
+    check add_url_as(world, url, source_owner, source_repo, package_name)
 }
 
 pub fn add(world: World, spec: String) -> Void raises {
@@ -205,7 +290,7 @@ pub fn add(world: World, spec: String) -> Void raises {
         check add_url(world, spec)
         return
     }
-    check add_alias(world, spec)
+    check add_package(world, spec)
 }
 
 pub fn install(world: World) -> Void raises {
@@ -253,7 +338,7 @@ pub fn search(world: World, query: String) -> Void raises {
         check world.out.write(bytes[0..read.value])
         return
     }
-    check world.out.write("namespace\turl\towner\n")
+    check world.out.write("name\turl\towner\n")
     var start: usize = 0
     while start < read.value {
         var end: usize = start
@@ -283,29 +368,16 @@ pub fn uninstall(world: World, command_name: String) -> Void raises {
     check world.err.write("zkg: command not installed\n")
 }
 
-pub fn remove(world: World, namespace: String) -> Void raises {
-    var owner_dir_buf: [256]u8 = [0; 256]
+pub fn remove(world: World, package_name: String) -> Void raises {
     var module_dir_buf: [256]u8 = [0; 256]
     var mod_path_buf: [256]u8 = [0; 256]
-    let namespace_len: usize = std.mem.len(namespace)
-    var dot: usize = 0
-    while dot < namespace_len && namespace[dot] != 46 {
-        dot = dot + 1
-    }
-    if dot == 0 || dot >= namespace_len - 1 {
-        check world.err.write("zkg: expected namespace like user.repo\n")
+    if !valid_package_name(package_name) {
+        check world.err.write("zkg: expected package name like wgpu\n")
         return
     }
-    let owner: String = namespace[0..dot]
-    let repo: String = namespace[dot + 1..namespace_len]
-    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", owner)
-    if !owner_dir.has {
-        check world.err.write("zkg: expected namespace like user.repo\n")
-        return
-    }
-    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, repo)
+    let module_dir: Maybe<String> = std.path.join(module_dir_buf, "src/zkg", package_name)
     if !module_dir.has {
-        check world.err.write("zkg: expected namespace like user.repo\n")
+        check world.err.write("zkg: expected package name like wgpu\n")
         return
     }
     let mod_path: Maybe<String> = std.path.join(mod_path_buf, module_dir.value, "mod.0")
@@ -316,9 +388,9 @@ pub fn remove(world: World, namespace: String) -> Void raises {
     }
     if std.fs.removeDir(module_dir.value) {
         check world.out.write("zkg: removed ")
-        check world.out.write(namespace)
+        check world.out.write(package_name)
         check world.out.write("\n")
         return
     }
-    check world.err.write("zkg: namespace not installed\n")
+    check world.err.write("zkg: package not installed\n")
 }
