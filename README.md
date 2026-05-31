@@ -29,13 +29,31 @@ Run `zkg add` from the root of the package that should receive the dependency:
 zkg add https://github.com/user/repo
 ```
 
+Search the first-class zkg registry:
+
+```sh
+zkg search
+zkg search wgpu
+```
+
+Install from a registry alias instead of a full HTTP URL:
+
+```sh
+zkg add ihasq.wgpu_zero
+zkg install ihasq.wgpu_zero
+```
+
 This creates an importable module tree under `src/zkg/`:
 
 ```zero
 use zkg.user.repo
 ```
 
-Repository owner and name segments should already be valid Zero module
+Registry aliases are resolved from this repository's `registry/` directory on
+GitHub. The registry is a name server only: it maps aliases to URL endpoints and
+does not store package source code.
+
+Repository owner, package names, and aliases should already be valid Zero module
 identifiers for the standard-module implementation.
 
 If the upstream repository has `src/mod.0`, that remains the module entry point.
@@ -44,6 +62,34 @@ the `use zkg.user.repo` form resolves.
 
 The standard-module implementation fetches package source over `std.http`
 instead of invoking `git`.
+
+## Registry
+
+`./registry` is the zkg equivalent of the crates.io namespace layer. It is
+intentionally small:
+
+```text
+registry/
+  index.tsv          search index used by zkg search
+  <namespace>        one URL endpoint per alias
+```
+
+For example, `registry/ihasq.wgpu_zero` contains:
+
+```text
+https://github.com/ihasq/wgpu-zero
+```
+
+Volunteers register new aliases by opening a pull request, following the
+js.org-style contribution model. A registration PR adds only
+`registry/<namespace>` and the matching sorted `registry/index.tsv` row. The
+GitHub Actions registry PR workflow validates:
+
+- requester rate limits
+- namespace conflicts
+- repository ownership or write/maintain/admin permission
+
+Merged PRs are the only way registry metadata changes.
 
 ## Remove A Package
 

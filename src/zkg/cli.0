@@ -5,7 +5,10 @@ use zkg.installer
 fn usage(world: World) -> Void raises {
     check world.err.write("usage: zkg install\n")
     check world.err.write("       zkg update\n")
+    check world.err.write("       zkg search [query]\n")
     check world.err.write("       zkg add https://github.com/user/repo\n")
+    check world.err.write("       zkg add <alias>\n")
+    check world.err.write("       zkg install <alias>\n")
     check world.err.write("       zkg uninstall <command>\n")
     check world.err.write("       zkg remove <namespace>\n")
 }
@@ -17,7 +20,21 @@ pub fn run(world: World) -> Void raises {
         return
     }
     if std.mem.eql(command.value, "install") {
+        let spec: Maybe<String> = std.args.get(2)
+        if spec.has {
+            check add(world, spec.value)
+            return
+        }
         check install(world)
+        return
+    }
+    if std.mem.eql(command.value, "search") {
+        let query: Maybe<String> = std.args.get(2)
+        if query.has {
+            check search(world, query.value)
+        } else {
+            check search(world, "")
+        }
         return
     }
     if std.mem.eql(command.value, "update") {
@@ -28,10 +45,6 @@ pub fn run(world: World) -> Void raises {
         let url: Maybe<String> = std.args.get(2)
         if !url.has {
             check usage(world)
-            return
-        }
-        if !is_valid_repo_url(url.value) {
-            check world.err.write("zkg: expected a GitHub repository URL like https://github.com/user/repo\n")
             return
         }
         check add(world, url.value)

@@ -55,6 +55,23 @@ fn fetch_raw_to_file(client: HttpClient, owner: String, repo: String, source_pat
     return check fetch_to_file(client, c.value, target_path)
 }
 
+fn fetch_registry_to_file(client: HttpClient, registry_path: String, target_path: String) -> Bool raises {
+    var url_a: [512]u8 = [0; 512]
+    let url: Maybe<String> = std.path.join(url_a, "https://raw.githubusercontent.com/zerolang-labs/zkg/refs/heads/main/registry", registry_path)
+    if !url.has {
+        return false
+    }
+    return check fetch_to_file(client, url.value, target_path)
+}
+
+fn first_line(buf: Span<u8>, len: usize) -> String {
+    var end: usize = 0
+    while end < len && buf[end] != 10 && buf[end] != 13 {
+        end = end + 1
+    }
+    return buf[0..end]
+}
+
 fn write_package_record(owner: String, repo: String) -> Void raises {
     ensure_dir(".zkg")
     ensure_dir(".zkg/packages")
@@ -79,11 +96,7 @@ fn write_package_record(owner: String, repo: String) -> Void raises {
     std.fs.close(&mut file)
 }
 
-pub fn add(world: World, url: String) -> Void raises {
-    let owner_base: String = std.path.dirname(url)
-    let owner: String = std.path.basename(owner_base)
-    let repo: String = std.path.basename(url)
-
+fn add_url_as(world: World, url: String, source_owner: String, source_repo: String, module_owner: String, module_repo: String) -> Void raises {
     ensure_dir("src")
     ensure_dir("src/zkg")
     ensure_dir(".zkg")
@@ -92,13 +105,13 @@ pub fn add(world: World, url: String) -> Void raises {
     var owner_dir_buf: [256]u8 = [0; 256]
     var module_dir_buf: [256]u8 = [0; 256]
     var mod_path_buf: [256]u8 = [0; 256]
-    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", owner)
+    let owner_dir: Maybe<String> = std.path.join(owner_dir_buf, "src/zkg", module_owner)
     if !owner_dir.has {
         check world.err.write("zkg: owner path too long\n")
         return
     }
     ensure_dir(owner_dir.value)
-    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, repo)
+    let module_dir: Maybe<String> = std.path.join(module_dir_buf, owner_dir.value, module_repo)
     if !module_dir.has {
         check world.err.write("zkg: module path too long\n")
         return
@@ -114,27 +127,85 @@ pub fn add(world: World, url: String) -> Void raises {
     let client: HttpClient = std.http.client(net)
     var installed: Bool = false
     if !installed {
-        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/mod.0", mod_path.value)
+        installed = check fetch_raw_to_file(client, source_owner, source_repo, "refs/heads/main/src/mod.0", mod_path.value)
     }
     if !installed {
-        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/lib.0", mod_path.value)
+        installed = check fetch_raw_to_file(client, source_owner, source_repo, "refs/heads/main/src/lib.0", mod_path.value)
     }
     if !installed {
-        installed = check fetch_raw_to_file(client, owner, repo, "refs/heads/main/src/main.0", mod_path.value)
+        installed = check fetch_raw_to_file(client, source_owner, source_repo, "refs/heads/main/src/main.0", mod_path.value)
     }
     if !installed {
         check world.err.write("zkg: no src/mod.0, src/lib.0, or src/main.0 found over std.http\n")
         return
     }
 
-    check write_package_record(owner, repo)
+    check write_package_record(module_owner, module_repo)
     check world.out.write("zkg: installed ")
     check world.out.write(url)
     check world.out.write(" as zkg.")
-    check world.out.write(owner)
+    check world.out.write(module_owner)
     check world.out.write(".")
-    check world.out.write(repo)
+    check world.out.write(module_repo)
     check world.out.write("\n")
+}
+
+fn add_url(world: World, url: String) -> Void raises {
+    let owner_base: String = std.path.dirname(url)
+    let owner: String = std.path.basename(owner_base)
+    let repo: String = std.path.basename(url)
+    check add_url_as(world, url, owner, repo, owner, repo)
+}
+
+fn add_alias(world: World, registry_name: String) -> Void raises {
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/cache")
+    ensure_dir(".zkg/cache/registry")
+    var alias_path_buf: [256]u8 = [0; 256]
+    let alias_path: Maybe<String> = std.path.join(alias_path_buf, ".zkg/cache/registry", registry_name)
+    if !alias_path.has {
+        check world.err.write("zkg: alias path too long\n")
+        return
+    }
+    let fetched: Bool = check fetch_registry_to_file(client, registry_name, alias_path.value)
+    if !fetched {
+        check world.err.write("zkg: registry alias not found: ")
+        check world.err.write(registry_name)
+        check world.err.write("\n")
+        return
+    }
+    var url_bytes: [512]u8 = [0; 512]
+    let read: Maybe<usize> = std.fs.readBytes(alias_path.value, url_bytes)
+    if !read.has {
+        check world.err.write("zkg: registry alias could not be read\n")
+        return
+    }
+    let url: String = first_line(url_bytes, read.value)
+    let source_owner_base: String = std.path.dirname(url)
+    let source_owner: String = std.path.basename(source_owner_base)
+    let source_repo: String = std.path.basename(url)
+    let registry_len: usize = std.mem.len(registry_name)
+    var dot: usize = 0
+    while dot < registry_len && registry_name[dot] != 46 {
+        dot = dot + 1
+    }
+    if dot == 0 || dot >= registry_len - 1 {
+        check world.err.write("zkg: expected registry alias like user.repo\n")
+        return
+    }
+    let module_owner: String = registry_name[0..dot]
+    let module_repo: String = registry_name[dot + 1..registry_len]
+    check add_url_as(world, url, source_owner, source_repo, module_owner, module_repo)
+}
+
+pub fn add(world: World, spec: String) -> Void raises {
+    if std.str.startsWith(spec, "https://") {
+        check add_url(world, spec)
+        return
+    }
+    check add_alias(world, spec)
 }
 
 pub fn install(world: World) -> Void raises {
@@ -160,6 +231,42 @@ pub fn update(world: World) -> Void raises {
         }
     }
     check world.err.write("zkg: update fetch failed\n")
+}
+
+pub fn search(world: World, query: String) -> Void raises {
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    ensure_dir(".zkg")
+    ensure_dir(".zkg/cache")
+    let fetched: Bool = check fetch_registry_to_file(client, "index.tsv", ".zkg/cache/registry-index.tsv")
+    if !fetched {
+        check world.err.write("zkg: registry index fetch failed\n")
+        return
+    }
+    var bytes: [65536]u8 = [0; 65536]
+    let read: Maybe<usize> = std.fs.readBytes(".zkg/cache/registry-index.tsv", bytes)
+    if !read.has {
+        check world.err.write("zkg: registry index could not be read\n")
+        return
+    }
+    if std.mem.len(query) == 0 {
+        check world.out.write(bytes[0..read.value])
+        return
+    }
+    check world.out.write("namespace\turl\towner\n")
+    var start: usize = 0
+    while start < read.value {
+        var end: usize = start
+        while end < read.value && bytes[end] != 10 {
+            end = end + 1
+        }
+        let line: String = bytes[start..end]
+        if std.str.contains(line, query) {
+            check world.out.write(line)
+            check world.out.write("\n")
+        }
+        start = end + 1
+    }
 }
 
 pub fn uninstall(world: World, command_name: String) -> Void raises {
