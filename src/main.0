@@ -1,0 +1,5 @@
+use zkg.cli
+
+pub fn main(world: World) -> Void raises {
+    check run(world)
+}

@@ -1,0 +1,66 @@
+fn is_lower(byte: u8) -> Bool {
+    return byte >= 97 && byte <= 122
+}
+
+fn is_upper(byte: u8) -> Bool {
+    return byte >= 65 && byte <= 90
+}
+
+fn is_digit(byte: u8) -> Bool {
+    return byte >= 48 && byte <= 57
+}
+
+fn is_slug_byte(byte: u8) -> Bool {
+    return is_lower(byte) || is_upper(byte) || is_digit(byte) || byte == 45 || byte == 46 || byte == 95
+}
+
+fn starts_with(text: String, prefix: String) -> Bool {
+    let text_len: usize = std.mem.len(text)
+    let prefix_len: usize = std.mem.len(prefix)
+    if text_len < prefix_len {
+        return false
+    }
+    var index: usize = 0
+    while index < prefix_len {
+        if text[index] != prefix[index] {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+pub fn is_valid_repo_url(url: String) -> Bool {
+    if !starts_with(url, "https://github.com/") {
+        return false
+    }
+
+    let len: usize = std.mem.len(url)
+    let start: usize = std.mem.len("https://github.com/")
+    var index: usize = start
+    var slash_count: usize = 0
+    var owner_len: usize = 0
+    var repo_len: usize = 0
+
+    while index < len {
+        let byte: u8 = url[index]
+        if byte == 47 {
+            slash_count = slash_count + 1
+            if slash_count > 1 {
+                return false
+            }
+        } else {
+            if !is_slug_byte(byte) {
+                return false
+            }
+            if slash_count == 0 {
+                owner_len = owner_len + 1
+            } else {
+                repo_len = repo_len + 1
+            }
+        }
+        index = index + 1
+    }
+
+    return slash_count == 1 && owner_len > 0 && repo_len > 0
+}

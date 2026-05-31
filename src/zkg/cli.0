@@ -1,0 +1,59 @@
+use zkg.github
+
+use zkg.installer
+
+fn usage(world: World) -> Void raises {
+    check world.err.write("usage: zkg install\n")
+    check world.err.write("       zkg update\n")
+    check world.err.write("       zkg add https://github.com/user/repo\n")
+    check world.err.write("       zkg uninstall <command>\n")
+    check world.err.write("       zkg remove <namespace>\n")
+}
+
+pub fn run(world: World) -> Void raises {
+    let command: Maybe<String> = std.args.get(1)
+    if !command.has {
+        check usage(world)
+        return
+    }
+    if std.mem.eql(command.value, "install") {
+        check install(world)
+        return
+    }
+    if std.mem.eql(command.value, "update") {
+        check update(world)
+        return
+    }
+    if std.mem.eql(command.value, "add") {
+        let url: Maybe<String> = std.args.get(2)
+        if !url.has {
+            check usage(world)
+            return
+        }
+        if !is_valid_repo_url(url.value) {
+            check world.err.write("zkg: expected a GitHub repository URL like https://github.com/user/repo\n")
+            return
+        }
+        check add(world, url.value)
+        return
+    }
+    if std.mem.eql(command.value, "uninstall") {
+        let command_name: Maybe<String> = std.args.get(2)
+        if !command_name.has {
+            check usage(world)
+            return
+        }
+        check uninstall(world, command_name.value)
+        return
+    }
+    if std.mem.eql(command.value, "remove") {
+        let namespace: Maybe<String> = std.args.get(2)
+        if !namespace.has {
+            check usage(world)
+            return
+        }
+        check remove(world, namespace.value)
+        return
+    }
+    check usage(world)
+}

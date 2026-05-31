@@ -1,0 +1,320 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  printf 'usage: zkg install\n' >&2
+  printf '       zkg update\n' >&2
+  printf '       zkg add https://github.com/user/repo\n' >&2
+  printf '       zkg uninstall <command>\n' >&2
+  printf '       zkg remove <namespace>\n' >&2
+}
+
+fail() {
+  printf 'zkg: %s\n' "$1" >&2
+  exit 1
+}
+
+zkg_home() {
+  if [ -n "${ZKG_HOME:-}" ]; then
+    printf '%s\n' "$ZKG_HOME"
+    return
+  fi
+  if [ -z "${HOME:-}" ]; then
+    fail 'HOME is not set; set ZKG_HOME to choose an install directory'
+  fi
+  printf '%s\n' "$HOME/.zkg"
+}
+
+ensure_home() {
+  home="$(zkg_home)"
+  mkdir -p "$home/bin" "$home/cache/github" "$home/packages" "$home/tmp"
+}
+
+find_zero() {
+  if command -v zero >/dev/null 2>&1; then
+    command -v zero
+    return
+  fi
+  if [ -n "${HOME:-}" ] && [ -x "$HOME/.zero/bin/zero" ]; then
+    printf '%s\n' "$HOME/.zero/bin/zero"
+    return
+  fi
+  return 1
+}
+
+install_global() {
+  ensure_home
+  home="$(zkg_home)"
+  zero_bin="$(find_zero)" || fail 'zero is required for zkg install'
+
+  if [ ! -f zero.json ] || [ ! -d src ]; then
+    fail 'run zkg install from the zkg source directory'
+  fi
+
+  "$zero_bin" check .
+
+  cp "$0" "$home/bin/zkg"
+  chmod 755 "$home/bin/zkg"
+  cp zero.json "$home/zero.json"
+  rm -rf "$home/src"
+  cp -R src "$home/src"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git config --get remote.origin.url > "$home/source-url" 2>/dev/null || true
+    git rev-parse HEAD > "$home/version" 2>/dev/null || true
+  fi
+
+  printf 'zkg: installed %s\n' "$home/bin/zkg"
+  case ":${PATH:-}:" in
+    *":$home/bin:"*) ;;
+    *) printf 'zkg: add %s/bin to PATH\n' "$home" ;;
+  esac
+}
+
+update_global() {
+  ensure_home
+  home="$(zkg_home)"
+  zero_bin="$(find_zero)" || fail 'zero is required for zkg update'
+
+  if [ -f zero.json ] && [ -d src ] && [ -f zkg ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git pull --ff-only
+    install_global
+    return
+  fi
+
+  source_url="${ZKG_UPDATE_URL:-}"
+  if [ -z "$source_url" ] && [ -f "$home/source-url" ]; then
+    source_url="$(cat "$home/source-url")"
+  fi
+  if [ -z "$source_url" ]; then
+    source_url="https://github.com/zerolang-labs/zkg.git"
+  fi
+
+  source_dir="$home/tmp/zkg-source"
+  if [ -d "$source_dir/.git" ]; then
+    git -C "$source_dir" fetch --tags origin
+    git -C "$source_dir" pull --ff-only origin main
+  else
+    rm -rf "$source_dir"
+    git clone --depth 1 "$source_url" "$source_dir"
+  fi
+
+  "$zero_bin" check "$source_dir"
+  (cd "$source_dir" && ZKG_HOME="$home" ./zkg install)
+  git -C "$source_dir" rev-parse HEAD > "$home/version" 2>/dev/null || true
+  printf 'zkg: updated %s/bin/zkg\n' "$home"
+}
+
+parse_repo_url() {
+  url="$1"
+  case "$url" in
+    https://github.com/*/*) ;;
+    *) fail 'expected a GitHub repository URL like https://github.com/user/repo' ;;
+  esac
+
+  repo_path="${url#https://github.com/}"
+  case "$repo_path" in
+    */*/*|*[\;\&\|\<\>\`\$\"\'\\\(\)\ \	]*)
+      fail 'repository URL contains unsupported characters'
+      ;;
+  esac
+
+  owner="${repo_path%%/*}"
+  repo="${repo_path#*/}"
+  repo="${repo%.git}"
+
+  if [ -z "$owner" ] || [ -z "$repo" ] || [ "$owner" = "$repo_path" ]; then
+    fail 'expected https://github.com/user/repo'
+  fi
+
+  case "$owner" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+      fail 'owner contains unsupported characters'
+      ;;
+  esac
+
+  case "$repo" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+      fail 'repository name contains unsupported characters'
+      ;;
+  esac
+
+  module_owner="$(printf '%s' "$owner" | tr '.-' '__')"
+  module_repo="$(printf '%s' "$repo" | tr '.-' '__')"
+
+  case "$module_owner" in
+    [0123456789]*) module_owner="_$module_owner" ;;
+  esac
+
+  case "$module_repo" in
+    [0123456789]*) module_repo="_$module_repo" ;;
+  esac
+}
+
+add_repo() {
+  url="$1"
+  parse_repo_url "$url"
+  ensure_home
+  home="$(zkg_home)"
+
+  cache="$home/cache/github/$owner/$repo"
+  module="src/zkg/$module_owner/$module_repo"
+
+  rm -rf "$cache" "$module"
+  mkdir -p "$(dirname "$cache")" "$(dirname "$module")"
+
+  git clone --depth 1 "$url" "$cache"
+  mkdir -p "$module"
+
+  if [ -d "$cache/src" ]; then
+    cp -R "$cache/src/." "$module/"
+  else
+    find "$cache" -maxdepth 1 -type f -name '*.0' -exec cp {} "$module/" \;
+  fi
+
+  if [ -d "$cache/include" ]; then
+    mkdir -p include
+    cp -R "$cache/include/." include/
+  fi
+
+  if [ ! -f "$module/mod.0" ]; then
+    if [ -f "$module/lib.0" ]; then
+      mv "$module/lib.0" "$module/mod.0"
+    elif [ -f "$module/main.0" ]; then
+      mv "$module/main.0" "$module/mod.0"
+    else
+      cat > "$module/mod.0" <<'EOF'
+pub fn zkg_package_marker() -> i32 {
+    return 1
+}
+EOF
+    fi
+  fi
+
+  mkdir -p .zero "$home/packages/$owner"
+  printf '{"url":"%s","module":"zkg.%s.%s","cache":"%s"}\n' "$url" "$module_owner" "$module_repo" "$cache" > .zero/zkg.lock.json
+  printf '{"url":"%s","module":"zkg.%s.%s","cache":"%s"}\n' "$url" "$module_owner" "$module_repo" "$cache" > "$home/packages/$owner/$repo.json"
+  printf 'zkg: installed %s as zkg.%s.%s\n' "$url" "$module_owner" "$module_repo"
+}
+
+parse_remove_namespace() {
+  namespace="$(printf '%s' "$1" | tr '-' '_')"
+  case "$namespace" in
+    zkg.*) fail 'remove namespaces are relative to src/zkg; use user.repo, not zkg.user.repo' ;;
+  esac
+
+  if [ -z "$namespace" ]; then
+    fail 'expected namespace like user.repo'
+  fi
+
+  case "$namespace" in
+    .*|*.|*..*|*/*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.]*)
+      fail 'expected namespace like user.repo'
+      ;;
+  esac
+  case "$namespace" in
+    *.*) ;;
+    *) fail 'expected namespace like user.repo' ;;
+  esac
+
+  module_name="zkg.$namespace"
+  module_path="src/zkg/$(printf '%s' "$namespace" | tr '.' '/')"
+}
+
+remove_namespace() {
+  parse_remove_namespace "$1"
+  ensure_home
+  home="$(zkg_home)"
+  removed=0
+
+  if [ -d "$module_path" ]; then
+    rm -rf "$module_path"
+    removed=1
+    parent="$(dirname "$module_path")"
+    rmdir "$parent" 2>/dev/null || true
+    rmdir src/zkg 2>/dev/null || true
+  fi
+
+  if [ -f .zero/zkg.lock.json ] && grep -q "\"module\":\"$module_name\"" .zero/zkg.lock.json; then
+    rm -f .zero/zkg.lock.json
+    removed=1
+  fi
+
+  for metadata in "$home"/packages/*/*.json; do
+    [ -f "$metadata" ] || continue
+    if grep -q "\"module\":\"$module_name\"" "$metadata"; then
+      cache="$(sed -n 's/.*"cache":"\([^"]*\)".*/\1/p' "$metadata")"
+      case "$cache" in
+        "$home"/cache/*) ;;
+        *) cache="" ;;
+      esac
+      if [ -n "$cache" ]; then
+        rm -rf "$cache"
+      fi
+      rm -f "$metadata"
+      removed=1
+    fi
+  done
+
+  if [ "$removed" -eq 0 ]; then
+    fail "namespace not installed: $namespace"
+  fi
+
+  printf 'zkg: removed %s\n' "$namespace"
+}
+
+uninstall_command() {
+  command_name="$1"
+  case "$command_name" in
+    ''|*/*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+      fail 'expected command name like zkg'
+      ;;
+  esac
+
+  ensure_home
+  home="$(zkg_home)"
+  command_path="$home/bin/$command_name"
+  if [ ! -e "$command_path" ]; then
+    fail "command not installed: $command_name"
+  fi
+
+  rm -f "$command_path"
+  if [ "$command_name" = "zkg" ]; then
+    rm -rf "$home/src"
+    rm -f "$home/zero.json" "$home/source-url" "$home/version"
+  fi
+  printf 'zkg: uninstalled %s\n' "$command_name"
+}
+
+case "${1:-}" in
+  install)
+    install_global
+    ;;
+  update)
+    update_global
+    ;;
+  add)
+    if [ -z "${2:-}" ]; then
+      usage
+      exit 2
+    fi
+    add_repo "$2"
+    ;;
+  uninstall)
+    if [ -z "${2:-}" ]; then
+      usage
+      exit 2
+    fi
+    uninstall_command "$2"
+    ;;
+  remove)
+    if [ -z "${2:-}" ]; then
+      usage
+      exit 2
+    fi
+    remove_namespace "$2"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
