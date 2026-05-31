@@ -46,4 +46,5 @@ The registry PR workflow validates:
 - requester rate limits
 - namespace conflicts
 - `registry/index.tsv` consistency
+- endpoint Zero code with `zero check`
 - that registry entries remain URL endpoints only, not package contents

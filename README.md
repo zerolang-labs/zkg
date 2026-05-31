@@ -88,6 +88,7 @@ GitHub Actions registry PR workflow validates:
 - requester rate limits
 - namespace conflicts
 - repository ownership or write/maintain/admin permission
+- endpoint Zero code with `zero check`
 
 Merged PRs are the only way registry metadata changes.
 

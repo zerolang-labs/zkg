@@ -20,6 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Zero
+        run: |
+          curl -fsSL https://zerolang.ai/install.sh | bash
+          echo "$HOME/.zero/bin" >> "$GITHUB_PATH"
+
       - name: Validate registry pull request
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

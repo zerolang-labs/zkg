@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ GITHUB_URL_RE = re.compile(
 INDEX_HEADER = "namespace\turl\towner"
 ALLOWED_REGISTRY_FILES = {"README.md", "index.tsv"}
 WRITE_PERMISSIONS = {"admin", "maintain", "write"}
+ZERO_ENTRYPOINTS = ("src/mod.0", "src/lib.0", "src/main.0")
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,47 @@ def validate_ownership(entry, actor, token):
     ]
 
 
+def find_zero_check_input(package_dir):
+    manifest = package_dir / "zero.json"
+    if manifest.exists():
+        return "."
+    for rel in ZERO_ENTRYPOINTS:
+        if (package_dir / rel).exists():
+            return rel
+    return ""
+
+
+def validate_zero_package(entry):
+    with tempfile.TemporaryDirectory(prefix="zkg-registry-") as tmp:
+        checkout = Path(tmp) / entry.namespace
+        clone = subprocess.run(
+            ["git", "clone", "--depth", "1", entry.url, str(checkout)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        if clone.returncode != 0:
+            return [f"could not clone endpoint for {entry.namespace}: {clone.stderr.strip()}"]
+
+        check_input = find_zero_check_input(checkout)
+        if not check_input:
+            expected = ", ".join(ZERO_ENTRYPOINTS)
+            return [f"{entry.namespace} endpoint must contain zero.json or one of: {expected}"]
+
+        checked = subprocess.run(
+            ["zero", "check", check_input],
+            cwd=checkout,
+            text=True,
+            capture_output=True,
+        )
+        if checked.returncode == 0:
+            return []
+        details = (checked.stdout + checked.stderr).strip()
+        if len(details) > 4000:
+            details = details[:4000] + "\n..."
+        return [f"zero check failed for {entry.namespace} ({check_input}):\n{details}"]
+
+
 def main():
     local_only = os.environ.get("LOCAL_REGISTRY_VALIDATE") == "1"
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -279,6 +322,8 @@ def main():
                 errors.append(f"changed registry entry is missing after validation: {namespace}")
                 continue
             errors.extend(validate_ownership(entry, actor, token))
+            if not errors:
+                errors.extend(validate_zero_package(entry))
 
     if errors:
         fail(errors)

@@ -13,4 +13,5 @@ https://github.com/<owner>/<repo>
 
 The registry validation workflow checks namespace conflicts, index consistency,
 request rate limits, and repository ownership or write/maintain/admin
-permission for the package endpoint.
+permission for the package endpoint. It also clones the endpoint repository and
+requires the Zero code to pass `zero check`.
